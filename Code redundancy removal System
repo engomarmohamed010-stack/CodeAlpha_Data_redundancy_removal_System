@@ -1,0 +1,71 @@
+import json
+import hashlib
+import pymysql  #  pymysql layer Lambda
+import time
+import os
+
+# RDS credentials ( environment variables)
+RDS_HOST = os.environ['RDS_HOST']
+RDS_USER = os.environ['RDS_USER']
+RDS_PASSWORD = os.environ['RDS_PASSWORD']
+RDS_DB = os.environ['RDS_DB']
+
+def generate_hash(email, device):
+    raw_data = f"{email.strip().lower()}_{device.strip()}"
+    return hashlib.sha256(raw_data.encode()).hexdigest()
+
+def lambda_handler(event, context):
+    try:
+        body = json.loads(event.get('body', '{}'))
+        email = body.get('email')
+        device = body.get('device')
+
+        if not email or not device:
+            return {
+                "statusCode": 400,
+                "body": json.dumps({"error": "Missing email or device"})
+            }
+
+        data_hash = generate_hash(email, device)
+
+        # Connect to RDS
+        conn = pymysql.connect(
+            host=RDS_HOST,
+            user=RDS_USER,
+            password=RDS_PASSWORD,
+            db=RDS_DB,
+            connect_timeout=5
+        )
+        cursor = conn.cursor()
+
+        # Check duplicate
+        cursor.execute("SELECT request_id FROM requests WHERE request_id=%s", (data_hash,))
+        result = cursor.fetchone()
+
+        if result:
+            cursor.close()
+            conn.close()
+            return {
+                "statusCode": 200,
+                "body": json.dumps({"status": "REDUNDANT", "message": "Duplicate request blocked"})
+            }
+
+        # Insert new request
+        cursor.execute(
+            "INSERT INTO requests (request_id, email, device, timestamp) VALUES (%s, %s, %s, %s)",
+            (data_hash, email, device, int(time.time()))
+        )
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        return {
+            "statusCode": 200,
+            "body": json.dumps({"status": "SUCCESS", "message": "Data stored successfully"})
+        }
+
+    except Exception as e:
+        return {
+            "statusCode": 500,
+            "body": json.dumps({"error": str(e)})
+        }
